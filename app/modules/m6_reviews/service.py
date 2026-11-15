@@ -4,6 +4,7 @@ from __future__ import annotations
 from ... import store
 from ..m4_pairs import service as pair_service
 from ..m5_clusters import service as cluster_service
+from ..m8_golden import service as golden_service
 from . import history, queue, version
 
 
@@ -42,6 +43,7 @@ def decide(run_id: str, pair_id: str, decision: str, expected_version: int,
     pair_service.ensure_pairs(run_id)
     record = version.decide(run_id, pair_id, decision, expected_version, operator)
     cluster_service.ensure_clusters(run_id)
+    golden_service.ensure_golden(run_id)
     return record
 
 

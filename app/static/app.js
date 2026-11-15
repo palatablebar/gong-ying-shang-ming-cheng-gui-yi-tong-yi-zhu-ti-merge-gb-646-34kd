@@ -62,6 +62,9 @@
         if (name === 'rebuild-clusters') {
           return postJson('/api/clusters', {}).then(function () { window.location.reload(); });
         }
+        if (name === 'rebuild-golden') {
+          return postJson('/api/golden', {}).then(function () { window.location.reload(); });
+        }
         if (name === 'reimport') {
           return postJson('/api/suppliers/import', { force: true })
             .then(function () { window.location.reload(); });

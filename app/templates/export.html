@@ -16,6 +16,19 @@
 
 <section class="panel">
   <div class="panel-head">
+    <h2 class="panel-title">金账导出（字段级采信）</h2>
+    <div class="panel-num">每个字段带来源，余额去重，未核实账户不入付款</div>
+  </div>
+  <div class="btn-row">
+    <a class="btn" href="/api/export/golden.csv" download>金账主数据 CSV</a>
+    <a class="btn" href="/api/export/provenance.csv" download>字段溯源 CSV</a>
+    <a class="btn" href="/api/export/amount-ledger.csv" download>金额账本 CSV</a>
+    <a class="btn btn-ghost" href="/api/export/golden-pending.csv" download>待核对 CSV</a>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2 class="panel-title">主数据预览</h2>
     <div class="panel-num">前 {{ clusters|length }} 个主体</div>
   </div>

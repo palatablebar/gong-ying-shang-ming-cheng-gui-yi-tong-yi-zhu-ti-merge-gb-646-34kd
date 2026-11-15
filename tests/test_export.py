@@ -46,7 +46,7 @@ def test_quarantine_csv(run):
 
 def test_conflicts_csv(run):
     rows = _rows(service.conflicts_csv(run["run_id"]))
-    assert len(rows) - 1 == EXP.CONFLICTS
+    assert len(rows) - 1 == EXP.FIELD_ACTIONS
     assert rows[1][0] == "S-0060"
     assert rows[1][1] == "city"
 
@@ -89,7 +89,67 @@ def test_csv_response_headers(client):
 def test_all_export_endpoints(client):
     for path in ("/api/export/master.csv", "/api/export/members.csv",
                  "/api/export/quarantine.csv", "/api/export/conflicts.csv",
+                 "/api/export/golden.csv", "/api/export/provenance.csv",
+                 "/api/export/amount-ledger.csv", "/api/export/golden-pending.csv",
                  "/api/export/manifest.json"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert response.content, path
+
+
+def test_golden_csv_dedup_and_provenance(run):
+    rows = _rows(service.golden_csv(run["run_id"]))
+    assert len(rows) - 1 == EXP.GOLDEN_SUBJECTS
+    header = rows[0]
+    assert "名称来源" in header and "账户核实" in header and "付款状态" in header
+    body = {row[0]: dict(zip(header, row)) for row in rows[1:]}
+    # 鼎新簇：金额采信 ERP-D 的更新余额，账户仍只来自主档类可信来源。
+    target = body["C-0001"]
+    assert target["本年累计(元)"] == "3000.00"
+    assert target["余额来源"].startswith("ERP-D")
+    assert target["账户核实"] == "已核实"
+    assert target["开户行账号"] == "6222020200011101"
+    assert target["账户来源"].split()[0] in ("ERP-A", "ERP-B", "ERP-C")
+    assert "ERP-D" not in target["账户来源"]
+    # 税号冲突簇必须阻断付款。
+    conflict = body[EXP.CONFLICT_CLUSTER_ID]
+    assert conflict["付款状态"] == "阻断"
+    assert "G_TAX_PENDING" in conflict["阻断原因"]
+
+
+def test_provenance_csv_covers_every_field(run):
+    rows = _rows(service.provenance_csv(run["run_id"]))
+    assert len(rows) - 1 == EXP.GOLDEN_SUBJECTS * EXP.PROVENANCE_FIELDS_PER_CLUSTER
+    fields = {row[1] for row in rows[1:]}
+    assert fields == {"raw_name", "tax_id", "city", "bank_account", "supplier_no", "ytd_amount"}
+    # 每个有采信值的字段都能追到具体来源文件与行号。
+    for row in rows[1:]:
+        if row[3]:
+            assert row[6]  # 来源文件非空
+            assert int(row[7]) > 0  # 来源行号
+
+
+def test_amount_ledger_csv_conservation(run):
+    rows = _rows(service.amount_ledger_csv(run["run_id"]))
+    adopted, suppressed = Decimal("0"), Decimal("0")
+    adopted_rows = suppressed_rows = 0
+    for row in rows[1:]:
+        amount = Decimal(row[5])
+        if row[7] == "采信":
+            adopted += amount
+            adopted_rows += 1
+        else:
+            suppressed += amount
+            suppressed_rows += 1
+    assert adopted == EXP.GOLDEN_PAYABLE
+    assert suppressed == EXP.GOLDEN_SUPPRESSED
+    assert suppressed_rows == EXP.GOLDEN_SUPPRESSED_ROWS
+    assert adopted_rows == EXP.GOLDEN_SUBJECTS
+    # 观察口径 = 出账口径 + 抑制口径，逐分守恒。
+    assert adopted + suppressed == EXP.AMOUNT_TOTAL
+
+
+def test_golden_pending_csv(run):
+    rows = _rows(service.golden_pending_csv(run["run_id"]))
+    assert len(rows) - 1 == EXP.GOLDEN_PENDING
+    assert {row[7] for row in rows[1:]} == {"G_TAX_PENDING"}

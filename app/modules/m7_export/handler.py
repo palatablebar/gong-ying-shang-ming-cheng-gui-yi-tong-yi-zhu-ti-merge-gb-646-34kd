@@ -48,6 +48,34 @@ def export_conflicts():
                          f"conflicts-{run['run_id']}.csv")
 
 
+@router.get("/golden.csv")
+def export_golden():
+    run = intake_service.ensure_run()
+    return _csv_response(service.golden_csv(run["run_id"]),
+                         f"golden-{run['run_id']}.csv")
+
+
+@router.get("/provenance.csv")
+def export_provenance():
+    run = intake_service.ensure_run()
+    return _csv_response(service.provenance_csv(run["run_id"]),
+                         f"provenance-{run['run_id']}.csv")
+
+
+@router.get("/amount-ledger.csv")
+def export_amount_ledger():
+    run = intake_service.ensure_run()
+    return _csv_response(service.amount_ledger_csv(run["run_id"]),
+                         f"amount-ledger-{run['run_id']}.csv")
+
+
+@router.get("/golden-pending.csv")
+def export_golden_pending():
+    run = intake_service.ensure_run()
+    return _csv_response(service.golden_pending_csv(run["run_id"]),
+                         f"golden-pending-{run['run_id']}.csv")
+
+
 @router.get("/manifest.json")
 def export_manifest():
     run = intake_service.ensure_run()

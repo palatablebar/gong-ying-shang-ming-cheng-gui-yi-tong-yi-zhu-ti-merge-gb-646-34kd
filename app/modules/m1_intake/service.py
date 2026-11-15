@@ -13,7 +13,6 @@ from ...config import RULE_VERSION, SAMPLE_DIR, SAMPLE_FILES
 from ...errors import DomainError, NotFound
 from ...manifest import combined_digest, run_id_for, utc_iso, utc_now
 from ...reasons import (
-    D_ID_CONFLICT,
     E_FILE_MISSING,
     Q_AMOUNT_INVALID,
     Q_DUP_ID_SAME,
@@ -24,6 +23,7 @@ from ...reasons import (
     Q_ROW_LONG,
     Q_ROW_SHORT,
 )
+from ..m8_golden import merge as golden_merge
 from . import columns, decode, reader
 
 PAYLOAD_FIELDS = ("supplier_no", "raw_name", "tax_id", "city", "bank_account",
@@ -62,6 +62,7 @@ def _row_record(index, cells, raw, source, line_no):
         "erp": columns.clean_text(values["erp_source"]),
         "ref_master_id": columns.clean_code(values["ref_master_id"]),
         "ytd_amount": str(amount if amount is not None else "0.00"),
+        "last_update": columns.clean_text(values["last_update"]),
         "flags": json.dumps(sorted(set(amount_flags + tax_flags)), ensure_ascii=False),
         "source_file": source,
         "line_no": line_no,
@@ -147,16 +148,23 @@ def ingest(files=None, force: bool = False) -> dict:
                                           record["raw_line"], Q_DUP_ID_SAME,
                                           f"保留 {previous['source_file']}:{previous['line_no']}"))
             continue
-        changed = columns.differing_fields(previous, record, PAYLOAD_FIELDS)
-        conflicts.append({
-            "supplier_id": record["supplier_id"],
-            "field": ",".join(changed),
-            "kept": f"{previous['source_file']}:{previous['line_no']}",
-            "rejected": f"{record['source_file']}:{record['line_no']}",
-            "reason_code": D_ID_CONFLICT,
-            "source_file": record["source_file"],
-            "line_no": record["line_no"],
-        })
+        # 字段级合并：各来源只贡献自己可信的字段，晚到的更正按可信级别接管，
+        # 不再把后到的整行当冲突丢掉。
+        merged, actions = golden_merge.merge_same_id(previous, record)
+        for action in actions:
+            conflicts.append({
+                "supplier_id": record["supplier_id"],
+                "field": action["field"],
+                "kept": action["kept"],
+                "rejected": action["rejected"],
+                "reason_code": action["reason_code"],
+                "source_file": action["source_file"],
+                "line_no": action["line_no"],
+            })
+        seen[record["supplier_id"]] = merged
+        target = next(item for item in unique if item["supplier_id"] == record["supplier_id"])
+        target.clear()
+        target.update(merged)
 
     input_rows = sum(item["data_rows"] for item in file_stats)
     combined = combined_digest(digests)
@@ -170,7 +178,7 @@ def ingest(files=None, force: bool = False) -> dict:
         "input_rows": input_rows,
         "accepted": len(unique),
         "quarantined": len(quarantine),
-        "conflicts": len(conflicts),
+        "field_actions": len(conflicts),
         "files": len(file_stats),
     }
     run = {
@@ -185,6 +193,7 @@ def ingest(files=None, force: bool = False) -> dict:
     }
     store.clear_stage(run_id, "intake")
     store.clear_stage(run_id, "normalize")
+    store.clear_stage(run_id, "golden")
     store.save_records(run_id, unique)
     store.save_quarantine(run_id, quarantine)
     store.save_conflicts(run_id, conflicts)
@@ -207,7 +216,6 @@ def summary(run_id: str) -> dict:
         "quarantined": len(store.list_quarantine(run_id)),
         "conflicts": len(store.list_conflicts(run_id)),
     }
-
 
 def file_diagnostics(run_id: str) -> list:
     run = store.get_run(run_id)

@@ -1,10 +1,11 @@
 # 深度登记 供应商主数据台账（gb-646 entitymerge）
 
-- 规模：中型（7 个功能模块，78 个文件，81 条测试）
+- 规模：中型（8 个功能模块，86 个文件，102 条测试）
 - 核心规则：名称归一后按 2-gram 分块，相似度 = 0.55 × bigram Dice + 0.45 × 编辑比率；
-  税号不同为硬冲突禁止合并，税号相同强制合并；并查集合并，代表元取税号最小者
+  税号不同为硬冲突禁止合并，税号相同强制合并；并查集合并，代表元取税号最小者；
+  金账按字段级可信来源装配，本年累计每主体只采一条权威余额，重复快照抑制不计
 - 使用者与工作流：集团采购中心主数据岗，每月收 6 个 ERP 导出的供应商名录，
-  逐份采信、看隔离、判定候选对、生成合并簇、人工复核边界对、导出主数据与证据
+  逐份采信、看隔离、判定候选对、生成合并簇、人工复核边界对、金账字段级采信与付款核验、导出主数据与证据
 
 ## 功能模块
 
@@ -16,7 +17,8 @@
 | M4 相似判定 | 看每对的得分、分档与原因码 | POST /api/pairs | `app/modules/m4_pairs/similarity.py` `app/modules/m4_pairs/threshold.py` `app/modules/m4_pairs/conflict.py` `app/modules/m4_pairs/service.py` `app/modules/m4_pairs/handler.py` | `tests/test_pairs.py` |
 | M5 等价类合并 | 生成合并簇，核对代表元与金额 | POST /api/clusters | `app/modules/m5_clusters/unionfind.py` `app/modules/m5_clusters/represent.py` `app/modules/m5_clusters/allocate.py` `app/modules/m5_clusters/service.py` `app/modules/m5_clusters/handler.py` | `tests/test_clusters.py` |
 | M6 复核批次 | 判定边界对，看引用异常与批次历史 | POST /api/reviews/{pair_id}/decision | `app/modules/m6_reviews/queue.py` `app/modules/m6_reviews/history.py` `app/modules/m6_reviews/version.py` `app/modules/m6_reviews/service.py` `app/modules/m6_reviews/handler.py` | `tests/test_reviews.py` |
-| M7 主数据导出 | 下载主数据、成员分摊、隔离区与运行清单 | GET /api/export/master.csv | `app/modules/m7_export/master_out.py` `app/modules/m7_export/quarantine_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` `app/modules/m7_export/handler.py` | `tests/test_export.py` |
+| M7 主数据导出 | 下载主数据、成员分摊、隔离区、金账与运行清单 | GET /api/export/master.csv | `app/modules/m7_export/master_out.py` `app/modules/m7_export/golden_out.py` `app/modules/m7_export/quarantine_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` `app/modules/m7_export/handler.py` | `tests/test_export.py` |
+| M8 金账装配 | 看每个字段采信来源、付款阻断与去重后合计 | POST /api/golden | `app/modules/m8_golden/trust.py` `app/modules/m8_golden/merge.py` `app/modules/m8_golden/service.py` `app/modules/m8_golden/handler.py` | `tests/test_golden.py` |
 
 ## 陷阱登记
 
@@ -28,7 +30,11 @@
 | TRAP-07 | 税号写成 -、N/A、未知 | 当成有效税号参与比对 | 哨兵清单集中在 config，空串与哨兵分开记 | `app/config.py` `app/modules/m1_intake/columns.py` | `tests/test_intake.py::test_sentinel_tax_not_blank` |
 | TRAP-08 | 供应商编码 000101 | int() 化后丢前导零，对账对不上 | 编码类字段全列字符串保形 | `app/modules/m1_intake/columns.py` | `tests/test_intake.py::test_leading_zero_supplier_no_preserved` |
 | TRAP-10 | 70 条金额累加 | float 累加尾差一分 | Decimal 逐分累加并量化到 0.01 | `app/modules/m5_clusters/service.py` | `tests/test_clusters.py::test_decimal_total_exact` |
-| TRAP-14 | 同供应商号两条不同城市 | 后写覆盖，来源不明 | 冲突表保留先到，记录剔除来源与差异字段 | `app/modules/m1_intake/service.py` | `tests/test_intake.py::test_duplicate_id_conflict_kept` |
+| TRAP-14 | 同供应商号两条不同城市 | 后写覆盖，来源不明 | 字段级可信裁决：晚到更正只接管自己可信的字段，冲突表逐字段留证据 | `app/modules/m8_golden/merge.py` `app/modules/m1_intake/service.py` | `tests/test_intake.py::test_duplicate_id_field_merge` `tests/test_golden.py::test_late_correction_takes_over_only_its_field` |
+| TRAP-27 | 同一主体多系统各报一份本年累计 | 整行相加，同一笔累计重复计入，合计虚高 | 每主体只采一条权威余额（ERP-D&gt;ERP-A&gt;B/C），其余快照记 G_AMOUNT_SUPPRESSED 抑制 | `app/modules/m8_golden/trust.py` `app/modules/m8_golden/service.py` | `tests/test_golden.py::test_each_subject_adopts_one_amount_only` `tests/test_golden.py::test_amount_authority_prefers_balance_source` |
+| TRAP-28 | 金额来源 ERP-D 自带银行账号 | 未核实账号被带进付款指令 | 账户可信级别为 0，账号只登记 G_ACCOUNT_UNVERIFIED，金账账户留空并阻断付款 | `app/modules/m8_golden/trust.py` `app/modules/m8_golden/service.py` | `tests/test_golden.py::test_untrusted_bank_account_never_enters_golden` |
+| TRAP-29 | 晚到更正改写城市/名称 | 整行先到先得，正确值当冲突丢掉 | 按 (可信级别, last_update, 供应商号) 字段裁决，跨级别覆盖与同级多值分流处理 | `app/modules/m8_golden/merge.py` | `tests/test_golden.py::test_lower_trust_source_cannot_overwrite_master_field` |
+| TRAP-30 | 重跑时文件处理顺序或遍历顺序变化 | 金账字段与合计漂移 | 裁决键不含文件顺序，全部按级别/日期/编号排序，金账四张表重跑逐字相等 | `app/modules/m8_golden/trust.py` | `tests/test_golden.py::test_rerun_produces_identical_golden` `tests/test_golden.py::test_amount_choice_is_order_independent` |
 | TRAP-18 | 仅表头、全空行、正常文件 | 三种都回成功并落 0 行 | 三态分开返回不同结论 | `app/modules/m1_intake/reader.py` | `tests/test_intake.py::test_empty_states_distinct` |
 | TRAP-19 | 名称全同但税号不同；或多条规则同时命中 | 按代码书写顺序覆盖 | 规则带 rank，取最小者，调整规则顺序结果不变 | `app/modules/m4_pairs/conflict.py` | `tests/test_pairs.py::test_rule_order_independent` `tests/test_pairs.py::test_tax_conflict_pair` |
 | TRAP-21 | 主档引用自引、断链、成环、指向别名 | 只查单向，漏报一半 | 四类引用核验逐条给证据行 | `app/modules/m6_reviews/queue.py` | `tests/test_reviews.py::test_one_sided_reference_flagged` |
@@ -38,15 +44,18 @@
 
 ## 对账规则
 
-- 记录：采信行数 = 采纳 + 隔离 + 同号冲突；采纳 = 主体数 + 合并成员数
-- 金额：Σ采纳记录金额 = Σ簇金额 = Σ成员分摊，全部 Decimal 逐分相等
-- 候选对：候选总数 = 自动 + 复核 + 拒绝；复核决定写入后簇与金额立即重算
+- 记录：采信行数 = 采纳 + 隔离 + 字段接管动作；采纳 = 主体数 + 合并成员数
+- 金额（证据口径）：Σ采纳记录金额 = Σ簇金额 = Σ成员分摊，全部 Decimal 逐分相等
+- 金额（出账口径）：观察余额合计 = 出账合计 + 抑制合计；每个主体恰好一条采信余额
+- 候选对：候选总数 = 自动 + 复核 + 拒绝；复核决定写入后簇、金账与金额立即重算
+- 金账：可付款主体 + 阻断主体 = 主体总数；阻断原因仅为 G_TAX_PENDING / G_ACCOUNT_UNVERIFIED
 - 空态：仅表头 / 全空行 / 正常文件三种结论分别记录在文件诊断里
 
 ## 已知不覆盖
 
 - 生产规模 8400 条未做压测；样例 73 行，分块桶上限 120、候选上限 4000 以外的桶只计数不展开
 - 税号只做字符串比较，未校验 18 位统一社会信用代码的校验位
-- 银行账号仅作为证据字段参与展示，未做账户一致性核验
+- 银行账户只做来源可信度核验，未对接银行账户校验位或黑白名单
 - 复核决定只支持合并与保留，未提供拆分已合并簇的能力
+- 金账待核对项只做清单登记与付款阻断，未提供页面内逐条裁决回写
 - 导出为单次全量 CSV，未做分页或增量下载

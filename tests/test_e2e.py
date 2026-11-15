@@ -12,6 +12,7 @@ PAGES = (
     ("/normalize", "名称归一"),
     ("/pairs", "候选对"),
     ("/clusters", "合并簇"),
+    ("/golden", "金账主数据"),
     ("/reviews", "复核队列"),
     ("/export", "主数据导出"),
 )
@@ -59,6 +60,13 @@ def test_rerun_same_input_same_numbers(client):
     clusters_second = client.get("/api/clusters").json()["summary"]
     assert clusters_first["clusters"] == clusters_second["clusters"] == EXP.CLUSTERS
     assert clusters_first["amount_total"] == clusters_second["amount_total"] == str(EXP.AMOUNT_TOTAL)
+
+    golden_first = client.post("/api/golden").json()
+    golden_second = client.post("/api/golden").json()
+    assert golden_first == golden_second
+    assert golden_first["amount_payable"] == str(EXP.GOLDEN_PAYABLE)
+    assert golden_first["amount_observed"] == str(EXP.AMOUNT_TOTAL)
+    assert golden_first["payment_blocked"] == EXP.GOLDEN_PAYMENT_BLOCKED
 
 
 def test_pages_show_signoff_and_batch_stamp(client):

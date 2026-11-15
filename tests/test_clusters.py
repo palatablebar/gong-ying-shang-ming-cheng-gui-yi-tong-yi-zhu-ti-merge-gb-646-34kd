@@ -109,6 +109,8 @@ def test_singleton_cluster(run):
 
 def test_reconcile_balances(run):
     service.ensure_clusters(run["run_id"])
+    from app.modules.m8_golden import service as golden_service
+    golden_service.ensure_golden(run["run_id"])
     ledger = service.reconcile(run["run_id"])
     assert ledger["ok"] is True
     assert ledger["input_rows"] == EXP.INPUT_ROWS
@@ -117,8 +119,14 @@ def test_reconcile_balances(run):
     assert ledger["merged_members"] == EXP.MERGED_MEMBERS
     assert Decimal(ledger["amount_records"]) == EXP.AMOUNT_TOTAL
     assert ledger["amount_records"] == ledger["amount_clusters"]
+    # 金账去重口径：出账 + 抑制 = 观察口径，逐分相等。
+    assert Decimal(ledger["amount_payable"]) == EXP.GOLDEN_PAYABLE
+    assert Decimal(ledger["amount_payable"]) + Decimal(ledger["amount_suppressed"]) \
+        == EXP.AMOUNT_TOTAL
+    assert ledger["golden_ready"] == EXP.GOLDEN_PAYMENT_READY
+    assert ledger["golden_blocked"] == EXP.GOLDEN_PAYMENT_BLOCKED
     names = {check["name"] for check in ledger["checks"]}
-    assert names == {"记录守恒", "主体拆分", "金额守恒", "候选对分档"}
+    assert names == {"记录守恒", "主体拆分", "金额守恒", "余额去重守恒", "候选对分档"}
 
 
 def test_decision_merge_changes_clusters(run):

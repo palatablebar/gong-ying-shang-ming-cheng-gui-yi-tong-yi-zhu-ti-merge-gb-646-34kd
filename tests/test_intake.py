@@ -70,17 +70,20 @@ def test_leading_zero_supplier_no_preserved(run):
     assert records["S-0007"]["supplier_no"].startswith("00")
 
 
-def test_duplicate_id_conflict_kept(run):
-    """TRAP-14 同号不同值：保留先到并记录被剔除来源，不静默覆盖。"""
+def test_duplicate_id_field_merge(run):
+    """晚到更正按字段可信级别接管：整行不再先到先得，正确的城市值必须保留。"""
     conflicts = store.list_conflicts(run["run_id"])
-    assert len(conflicts) == EXP.CONFLICTS
+    assert len(conflicts) == EXP.FIELD_ACTIONS
     conflict = conflicts[0]
     assert conflict["supplier_id"] == "S-0060"
     assert conflict["field"] == "city"
-    assert conflict["kept"] == "erp_d_amounts.csv:4"
-    assert conflict["rejected"] == "erp_d_amounts.csv:5"
+    assert conflict["reason_code"] == "G_FIELD_OVERRIDDEN"
+    assert conflict["kept"] == "erp_d_amounts.csv:5"
+    assert conflict["rejected"] == "erp_d_amounts.csv:4"
     record = store.get_record(run["run_id"], "S-0060")
-    assert record["city"] == "大连"
+    # 后到的正确城市（沈阳）按更新时间接管，先到的大连不再被整行保留。
+    assert record["city"] == "沈阳"
+    assert record["last_update"] == "2026-03-28"
 
 
 def test_duplicate_identical_row_isolated(run):
@@ -119,7 +122,9 @@ def test_full_sample_counts(run):
     assert counts["input_rows"] == EXP.INPUT_ROWS
     assert counts["accepted"] == EXP.ACCEPTED
     assert counts["quarantined"] == EXP.QUARANTINED
-    assert counts["conflicts"] == EXP.CONFLICTS
-    assert counts["input_rows"] == counts["accepted"] + counts["quarantined"] + counts["conflicts"]
+    assert counts["field_actions"] == EXP.FIELD_ACTIONS
+    # 输入行守恒：采纳记录 + 隔离行 + 被字段级合并的同号行。
+    assert counts["input_rows"] == (counts["accepted"] + counts["quarantined"]
+                                    + counts["field_actions"])
     assert run["input_sha256"] == run["input_sha256"].lower()
     assert len(run["input_sha256"]) == 64

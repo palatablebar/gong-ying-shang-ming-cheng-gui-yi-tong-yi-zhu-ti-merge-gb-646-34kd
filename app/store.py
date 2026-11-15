@@ -35,6 +35,7 @@ SCHEMA = (
         erp TEXT NOT NULL DEFAULT '',
         ref_master_id TEXT NOT NULL DEFAULT '',
         ytd_amount TEXT NOT NULL DEFAULT '0.00',
+        last_update TEXT NOT NULL DEFAULT '',
         flags TEXT NOT NULL DEFAULT '[]',
         source_file TEXT NOT NULL DEFAULT '',
         line_no INTEGER NOT NULL DEFAULT 0,
@@ -113,13 +114,75 @@ SCHEMA = (
         decided_at TEXT NOT NULL,
         PRIMARY KEY (run_id, pair_id)
     )""",
+    """CREATE TABLE IF NOT EXISTS golden_records (
+        run_id TEXT NOT NULL,
+        cluster_id TEXT NOT NULL,
+        rep_id TEXT NOT NULL,
+        supplier_no TEXT NOT NULL DEFAULT '',
+        raw_name TEXT NOT NULL DEFAULT '',
+        tax_id TEXT NOT NULL DEFAULT '',
+        city TEXT NOT NULL DEFAULT '',
+        bank_account TEXT NOT NULL DEFAULT '',
+        ytd_amount TEXT NOT NULL DEFAULT '0.00',
+        amount_supplier_id TEXT NOT NULL DEFAULT '',
+        amount_erp TEXT NOT NULL DEFAULT '',
+        account_verified INTEGER NOT NULL DEFAULT 0,
+        payment_blocked INTEGER NOT NULL DEFAULT 0,
+        block_reasons TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (run_id, cluster_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS field_provenance (
+        run_id TEXT NOT NULL,
+        cluster_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        chosen_value TEXT NOT NULL DEFAULT '',
+        chosen_supplier_id TEXT NOT NULL DEFAULT '',
+        chosen_erp TEXT NOT NULL DEFAULT '',
+        chosen_source_file TEXT NOT NULL DEFAULT '',
+        chosen_line_no INTEGER NOT NULL DEFAULT 0,
+        reason_code TEXT NOT NULL,
+        candidate_count INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (run_id, cluster_id, field)
+    )""",
+    """CREATE TABLE IF NOT EXISTS amount_ledger (
+        run_id TEXT NOT NULL,
+        cluster_id TEXT NOT NULL,
+        supplier_id TEXT NOT NULL,
+        erp TEXT NOT NULL,
+        source_file TEXT NOT NULL DEFAULT '',
+        line_no INTEGER NOT NULL DEFAULT 0,
+        observed_amount TEXT NOT NULL DEFAULT '0.00',
+        authority INTEGER NOT NULL DEFAULT 0,
+        decision TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        last_update TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (run_id, cluster_id, supplier_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS golden_pending (
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        cluster_id TEXT NOT NULL,
+        supplier_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        observed_value TEXT NOT NULL DEFAULT '',
+        erp TEXT NOT NULL DEFAULT '',
+        source_file TEXT NOT NULL DEFAULT '',
+        line_no INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT ''
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_records_run ON records(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_quarantine_run ON quarantine(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_pairs_run ON pair_scores(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_golden_run ON golden_records(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_provenance_run ON field_provenance(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_amount_ledger_run ON amount_ledger(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_golden_pending_run ON golden_pending(run_id)",
 )
 
 TABLES = ("runs", "records", "quarantine", "conflicts", "blocks", "block_pairs",
-          "pair_scores", "clusters", "cluster_members", "decisions")
+          "pair_scores", "clusters", "cluster_members", "decisions",
+          "golden_records", "field_provenance", "amount_ledger", "golden_pending")
 
 
 def db_path() -> Path:
@@ -205,6 +268,7 @@ def clear_stage(run_id: str, stage: str) -> None:
         "blocks": ("blocks", "block_pairs"),
         "pairs": ("pair_scores",),
         "clusters": ("clusters", "cluster_members"),
+        "golden": ("golden_records", "field_provenance", "amount_ledger", "golden_pending"),
     }[stage]
     with connect() as conn:
         for table in tables:
@@ -217,11 +281,11 @@ def save_records(run_id: str, records) -> None:
         conn.executemany(
             "INSERT OR REPLACE INTO records (run_id, supplier_id, supplier_no, raw_name,"
             " norm_name, norm_codes, tax_id, city, bank_account, erp, ref_master_id, ytd_amount,"
-            " flags, source_file, line_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " last_update, flags, source_file, line_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(run_id, r["supplier_id"], r["supplier_no"], r["raw_name"], r.get("norm_name", ""),
               r.get("norm_codes", "[]"), r["tax_id"], r["city"], r["bank_account"], r["erp"],
-              r["ref_master_id"], str(r["ytd_amount"]), r.get("flags", "[]"),
-              r["source_file"], r["line_no"]) for r in records],
+              r["ref_master_id"], str(r["ytd_amount"]), r.get("last_update", ""),
+              r.get("flags", "[]"), r["source_file"], r["line_no"]) for r in records],
         )
         conn.commit()
 
@@ -405,6 +469,89 @@ def save_decision(decision: dict) -> None:
              decision["decided_at"]),
         )
         conn.commit()
+
+
+# ---- M8 金账 ----
+
+def save_golden(run_id: str, golden, provenance, ledger_rows, pending) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM golden_records WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM field_provenance WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM amount_ledger WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM golden_pending WHERE run_id = ?", (run_id,))
+        conn.executemany(
+            "INSERT INTO golden_records (run_id, cluster_id, rep_id, supplier_no, raw_name,"
+            " tax_id, city, bank_account, ytd_amount, amount_supplier_id, amount_erp,"
+            " account_verified, payment_blocked, block_reasons)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, g["cluster_id"], g["rep_id"], g["supplier_no"], g["raw_name"],
+              g["tax_id"], g["city"], g["bank_account"], str(g["ytd_amount"]),
+              g["amount_supplier_id"], g["amount_erp"], 1 if g["account_verified"] else 0,
+              1 if g["payment_blocked"] else 0,
+              json.dumps(g.get("block_reasons", []), ensure_ascii=False)) for g in golden],
+        )
+        conn.executemany(
+            "INSERT INTO field_provenance (run_id, cluster_id, field, chosen_value,"
+            " chosen_supplier_id, chosen_erp, chosen_source_file, chosen_line_no, reason_code,"
+            " candidate_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, p["cluster_id"], p["field"], p["chosen_value"], p["chosen_supplier_id"],
+              p["chosen_erp"], p.get("chosen_source_file", ""), p.get("chosen_line_no", 0),
+              p["reason_code"], p.get("candidate_count", 1)) for p in provenance],
+        )
+        conn.executemany(
+            "INSERT INTO amount_ledger (run_id, cluster_id, supplier_id, erp, source_file,"
+            " line_no, observed_amount, authority, decision, reason_code, last_update)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, row["cluster_id"], row["supplier_id"], row["erp"],
+              row.get("source_file", ""), row.get("line_no", 0), str(row["observed_amount"]),
+              row["authority"], row["decision"], row["reason_code"],
+              row.get("last_update", "")) for row in ledger_rows],
+        )
+        conn.executemany(
+            "INSERT INTO golden_pending (run_id, seq, cluster_id, supplier_id, field,"
+            " reason_code, observed_value, erp, source_file, line_no, detail)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, i, row["cluster_id"], row["supplier_id"], row["field"],
+              row["reason_code"], row.get("observed_value", ""), row.get("erp", ""),
+              row.get("source_file", ""), row.get("line_no", 0), row.get("detail", ""))
+             for i, row in enumerate(pending, 1)],
+        )
+        conn.commit()
+
+
+def list_golden(run_id: str) -> list:
+    with connect() as conn:
+        return _rows(conn, "SELECT * FROM golden_records WHERE run_id = ?"
+                           " ORDER BY cluster_id", (run_id,))
+
+
+def get_golden(run_id: str, cluster_id: str):
+    with connect() as conn:
+        return _one(conn, "SELECT * FROM golden_records WHERE run_id = ? AND cluster_id = ?",
+                    (run_id, cluster_id))
+
+
+def list_provenance(run_id: str, cluster_id: str = "") -> list:
+    with connect() as conn:
+        if cluster_id:
+            return _rows(conn, "SELECT * FROM field_provenance WHERE run_id = ? AND cluster_id = ?"
+                               " ORDER BY field", (run_id, cluster_id))
+        return _rows(conn, "SELECT * FROM field_provenance WHERE run_id = ?"
+                           " ORDER BY cluster_id, field", (run_id,))
+
+
+def list_amount_ledger(run_id: str, cluster_id: str = "") -> list:
+    with connect() as conn:
+        if cluster_id:
+            return _rows(conn, "SELECT * FROM amount_ledger WHERE run_id = ? AND cluster_id = ?"
+                               " ORDER BY authority DESC, supplier_id", (run_id, cluster_id))
+        return _rows(conn, "SELECT * FROM amount_ledger WHERE run_id = ?"
+                           " ORDER BY cluster_id, authority DESC, supplier_id", (run_id,))
+
+
+def list_golden_pending(run_id: str) -> list:
+    with connect() as conn:
+        return _rows(conn, "SELECT * FROM golden_pending WHERE run_id = ? ORDER BY seq", (run_id,))
 
 
 def count(run_id: str, table: str) -> int:

@@ -113,6 +113,21 @@ def reconcile(run_id: str) -> dict:
     bands = {"auto": 0, "review": 0, "reject": 0}
     for pair in pairs:
         bands[pair["verdict"]] = bands.get(pair["verdict"], 0) + 1
+
+    # 金账口径：每个主体只采一条权威余额，重复本年累计被抑制。
+    golden_rows = store.list_golden(run_id)
+    amount_ledger = store.list_amount_ledger(run_id)
+    if golden_rows:
+        amount_payable = sum((Decimal(row["ytd_amount"]) for row in golden_rows), Decimal("0"))
+        amount_suppressed = sum(
+            (Decimal(row["observed_amount"]) for row in amount_ledger
+             if row["decision"] == "suppressed"), Decimal("0"))
+        golden_ready = sum(1 for row in golden_rows if not row["payment_blocked"])
+        golden_blocked = sum(1 for row in golden_rows if row["payment_blocked"])
+    else:
+        amount_payable = amount_suppressed = Decimal("0")
+        golden_ready = golden_blocked = 0
+
     checks = [
         {"name": "记录守恒", "left": input_rows, "right": accepted + quarantined + conflicts,
          "ok": input_rows == accepted + quarantined + conflicts},
@@ -120,6 +135,9 @@ def reconcile(run_id: str) -> dict:
          "ok": accepted == subjects + merged},
         {"name": "金额守恒", "left": str(amount_records), "right": str(amount_clusters),
          "ok": amount_records == amount_clusters},
+        {"name": "余额去重守恒", "left": str(amount_records),
+         "right": str(amount_payable + amount_suppressed),
+         "ok": amount_records == amount_payable + amount_suppressed},
         {"name": "候选对分档", "left": len(pairs), "right": sum(bands.values()),
          "ok": len(pairs) == sum(bands.values())},
     ]
@@ -137,6 +155,10 @@ def reconcile(run_id: str) -> dict:
         "singletons": sum(1 for cluster in clusters if cluster["member_count"] == 1),
         "amount_records": str(amount_records),
         "amount_clusters": str(amount_clusters),
+        "amount_payable": str(amount_payable),
+        "amount_suppressed": str(amount_suppressed),
+        "golden_ready": golden_ready,
+        "golden_blocked": golden_blocked,
         "bands": bands,
         "checks": checks,
         "ok": all(check["ok"] for check in checks),

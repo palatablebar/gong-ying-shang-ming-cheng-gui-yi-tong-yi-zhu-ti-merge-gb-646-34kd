@@ -13,10 +13,10 @@ from tests.fixtures import expected as EXP
 def test_row_conservation(run):
     counts = intake_service.summary(run["run_id"])["counts"]
     assert counts["input_rows"] == (counts["accepted"] + counts["quarantined"]
-                                    + counts["conflicts"])
+                                    + counts["field_actions"])
     assert counts["accepted"] == store.count(run["run_id"], "records")
     assert counts["quarantined"] == store.count(run["run_id"], "quarantine")
-    assert counts["conflicts"] == store.count(run["run_id"], "conflicts")
+    assert counts["field_actions"] == store.count(run["run_id"], "conflicts")
 
 
 def test_amount_conservation(run):

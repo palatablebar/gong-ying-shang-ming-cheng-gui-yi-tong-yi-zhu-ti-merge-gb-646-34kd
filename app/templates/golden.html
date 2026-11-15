@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="panel">
+  <div class="panel-head">
+    <h1 class="panel-title">金账主数据 · 字段级采信</h1>
+    <div class="panel-num">{{ golden_summary.subjects }} 个主体 · 可付款 {{ golden_summary.payment_ready }} · 阻断 {{ golden_summary.payment_blocked }}</div>
+    <button type="button" class="btn" data-action="rebuild-golden">重建</button>
+  </div>
+  <table class="tbl tbl-tight">
+    <tbody>
+      <tr><td>观察余额合计（各系统原始快照直接相加）</td><td class="num">{{ golden_summary.amount_observed|money }} 元</td></tr>
+      <tr><td>重复累计抑制（同一笔本年累计不重复计入）</td><td class="num">-{{ golden_summary.amount_suppressed|money }} 元 · {{ golden_summary.suppressed_rows }} 条</td></tr>
+      <tr><td><strong>出账合计（每主体仅一条权威余额）</strong></td><td class="num"><strong>{{ golden_summary.amount_payable|money }} 元</strong></td></tr>
+      <tr><td>待核对项</td><td class="num">{{ golden_summary.pending_items }} 条 · {{ golden_summary.pending_codes|join('、') }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">金账明细与字段来源</h2>
+    <div class="panel-num">每个字段标注采信来源（供应商号 / ERP / 文件:行）</div>
+  </div>
+  <table class="tbl">
+    <thead><tr>
+      <th>主体</th><th>名称（来源）</th><th>税号（来源）</th><th class="w-city">城市（来源）</th>
+      <th>开户行账号（来源）</th><th class="num">本年累计（来源）</th><th>付款状态</th><th>溯源与余额账本</th><th class="spacer"></th>
+    </tr></thead>
+    <tbody>
+      {% for row in golden_rows %}
+      <tr>
+        <td class="mono">{{ row.cluster_id }}<br><span class="sub">{{ row.rep_id }}</span></td>
+        {% set prov = {} %}
+        {% for p in prov_by_cluster.get(row.cluster_id, []) %}{% set _ = prov.update({p.field: p}) %}{% endfor %}
+        <td>
+          {{ row.raw_name or '—' }}
+          {% if prov.get('raw_name') %}<br><span class="sub mono">{{ prov['raw_name'].chosen_erp }} · {{ prov['raw_name'].chosen_supplier_id }} · {{ reason_label(prov['raw_name'].reason_code) }}</span>{% endif %}
+        </td>
+        <td class="mono">
+          {{ row.tax_id or '—' }}
+          {% if prov.get('tax_id') %}<br><span class="sub">{{ prov['tax_id'].chosen_erp }} · {{ prov['tax_id'].chosen_supplier_id }}</span>{% endif %}
+        </td>
+        <td class="w-city">
+          {{ row.city or '—' }}
+          {% if prov.get('city') %}<br><span class="sub">{{ prov['city'].chosen_erp }} · {{ prov['city'].chosen_supplier_id }}</span>{% endif %}
+        </td>
+        <td class="mono">
+          {{ row.bank_account or '—' }}
+          {% if row.account_verified and prov.get('bank_account') %}<br><span class="sub">已核实 · {{ prov['bank_account'].chosen_erp }}</span>
+          {% else %}<br><span class="tag tag-bad">账户未核实</span>{% endif %}
+        </td>
+        <td class="num">
+          {{ row.ytd_amount|money }}
+          <br><span class="sub mono">{{ row.amount_erp }} · {{ row.amount_supplier_id }}</span>
+        </td>
+        <td>
+          {% if row.payment_blocked %}
+            <span class="tag tag-bad">阻断付款</span>
+            {% for code in row.block_reasons|from_json %}<br><span class="sub">{{ reason_label(code) }}</span>{% endfor %}
+          {% else %}<span class="tag tag-ok">可付款</span>{% endif %}
+        </td>
+        <td>
+          <details class="fold">
+            <summary>{{ prov_by_cluster.get(row.cluster_id, [])|length }} 字段 / {{ ledger_by_cluster.get(row.cluster_id, [])|length }} 余额</summary>
+            <table class="tbl tbl-inner">
+              <thead><tr><th>字段</th><th>采信值</th><th>来源</th><th>裁决</th></tr></thead>
+              <tbody>
+                {% for p in prov_by_cluster.get(row.cluster_id, []) %}
+                <tr>
+                  <td>{{ field_labels.get(p.field, p.field) }}</td>
+                  <td class="mono">{{ p.chosen_value or '—' }}</td>
+                  <td class="mono">{{ p.chosen_erp or '—' }} {{ p.chosen_supplier_id }}<br><span class="sub">{{ p.chosen_source_file }}:{{ p.chosen_line_no }}</span></td>
+                  <td><span class="tag">{{ reason_label(p.reason_code) }}</span></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            <table class="tbl tbl-inner">
+              <thead><tr><th>供应商号</th><th>ERP</th><th class="num">观察余额</th><th>裁决</th></tr></thead>
+              <tbody>
+                {% for entry in ledger_by_cluster.get(row.cluster_id, []) %}
+                <tr>
+                  <td class="mono">{{ entry.supplier_id }}</td>
+                  <td>{{ entry.erp }}</td>
+                  <td class="num">{{ entry.observed_amount|money }}</td>
+                  <td>{% if entry.decision == 'adopted' %}<span class="tag tag-ok">采信</span>{% else %}<span class="tag">抑制不计</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </details>
+        </td>
+        <td class="spacer"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">待核对项</h2>
+    <div class="panel-num">{{ pending|length }} 条 · 未核实前不进入付款</div>
+  </div>
+  <table class="tbl tbl-tight">
+    <thead><tr><th>主体</th><th>供应商号</th><th>字段</th><th>观察值</th><th>来源</th><th>原因</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for item in pending %}
+      <tr>
+        <td class="mono">{{ item.cluster_id }}</td>
+        <td class="mono">{{ item.supplier_id }}</td>
+        <td>{{ field_labels.get(item.field, item.field) }}</td>
+        <td class="mono">{{ item.observed_value or '—' }}</td>
+        <td>{{ item.erp }}<br><span class="sub">{{ item.source_file }}:{{ item.line_no }}</span></td>
+        <td><span class="tag tag-bad">{{ reason_label(item.reason_code) }}</span></td>
+        <td class="sub">{{ item.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">无待核对项</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

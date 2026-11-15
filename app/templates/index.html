@@ -3,18 +3,18 @@
 <section class="panel">
   <div class="panel-head">
     <h1 class="panel-title">台账总览</h1>
-    <div class="panel-num">{{ ledger.accepted }} 条 · {{ ledger.subjects }} 个主体 · 合计 {{ ledger.amount_clusters|money }} 元</div>
+    <div class="panel-num">{{ ledger.accepted }} 条 · {{ ledger.subjects }} 个主体 · 出账合计 {{ ledger.amount_payable|money }} 元</div>
   </div>
   <div class="grid-two">
     <table class="tbl tbl-tight">
       <thead><tr><th>项目</th><th class="num">数值</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>采信行数</td><td class="num">{{ ledger.input_rows|intcomma }}</td><td>含隔离与冲突</td></tr>
+        <tr><td>采信行数</td><td class="num">{{ ledger.input_rows|intcomma }}</td><td>含隔离与字段接管</td></tr>
         <tr><td>采纳记录</td><td class="num">{{ ledger.accepted|intcomma }}</td><td>去重后</td></tr>
         <tr><td>隔离行</td><td class="num">{{ ledger.quarantined|intcomma }}</td><td>见下方诊断</td></tr>
-        <tr><td>同号冲突</td><td class="num">{{ ledger.conflicts|intcomma }}</td><td>保留先到</td></tr>
+        <tr><td>字段接管动作</td><td class="num">{{ ledger.conflicts|intcomma }}</td><td>晚到更正按可信度接管</td></tr>
         <tr><td>合并成员</td><td class="num">{{ ledger.merged_members|intcomma }}</td><td>并入代表</td></tr>
-        <tr><td>金额合计</td><td class="num">{{ ledger.amount_clusters|money }}</td><td>元</td></tr>
+        <tr><td>观察余额合计</td><td class="num">{{ ledger.amount_clusters|money }}</td><td>原始快照口径</td></tr>
       </tbody>
     </table>
     <table class="tbl tbl-tight">
@@ -34,8 +34,25 @@
   <div class="btn-row">
     <button type="button" class="btn" data-action="rebuild-clusters">重建合并簇</button>
     <button type="button" class="btn" data-action="reimport">重新采信</button>
+    <a class="btn btn-link" href="/golden">金账主数据</a>
     <a class="btn btn-link" href="/export">导出</a>
   </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">金账出账口径（字段级采信）</h2>
+    <div class="panel-num">可付款 {{ golden_summary.payment_ready }} · 阻断 {{ golden_summary.payment_blocked }}</div>
+    <a class="btn btn-link" href="/golden">查看字段来源</a>
+  </div>
+  <table class="tbl tbl-tight">
+    <tbody>
+      <tr><td>观察余额合计（各系统快照直接相加）</td><td class="num">{{ golden_summary.amount_observed|money }} 元</td></tr>
+      <tr><td>重复累计抑制（同一笔本年累计不重复计入，{{ golden_summary.suppressed_rows }} 条）</td><td class="num">-{{ golden_summary.amount_suppressed|money }} 元</td></tr>
+      <tr><td class="strong">出账合计（每主体仅一条权威余额，逐分可复算）</td><td class="num strong">{{ golden_summary.amount_payable|money }} 元</td></tr>
+      <tr><td>待核对项（未核实前不进入付款）</td><td class="num">{{ golden_summary.pending_items }} 条 · {{ golden_summary.pending_codes|join('、') }}</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <section class="panel">
@@ -117,8 +134,8 @@
 
 <section class="panel">
   <div class="panel-head">
-    <h2 class="panel-title">隔离与冲突</h2>
-    <div class="panel-num">{{ counts.quarantined }} 行隔离 · {{ counts.conflicts }} 条冲突</div>
+    <h2 class="panel-title">隔离与字段接管</h2>
+    <div class="panel-num">{{ counts.quarantined }} 行隔离 · {{ counts.field_actions }} 条字段动作</div>
     <a class="btn btn-link" href="/api/export/quarantine.csv" download>导出隔离区</a>
   </div>
   <div class="grid-two">
@@ -137,7 +154,7 @@
       </tbody>
     </table>
     <table class="tbl tbl-tight">
-      <thead><tr><th>供应商号</th><th>差异字段</th><th>保留</th><th>剔除</th></tr></thead>
+      <thead><tr><th>供应商号</th><th>字段</th><th>采信来源</th><th>让位来源</th><th>裁决</th></tr></thead>
       <tbody>
         {% for row in conflicts %}
         <tr>
@@ -145,6 +162,7 @@
           <td>{{ row.field }}</td>
           <td class="mono">{{ row.kept }}</td>
           <td class="mono">{{ row.rejected }}</td>
+          <td><span class="tag">{{ reasons.get(row.reason_code, row.reason_code) }}</span></td>
         </tr>
         {% endfor %}
       </tbody>

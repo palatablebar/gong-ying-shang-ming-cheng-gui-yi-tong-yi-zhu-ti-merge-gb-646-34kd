@@ -11,15 +11,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from . import store
-from .config import APP_NAME, RULE_VERSION, TZ_DISPLAY
+from .config import APP_NAME, GOLDEN_FIELD_LABELS, RULE_VERSION, TZ_DISPLAY
 from .manifest import parse_utc
-from .reasons import all_codes
+from .reasons import all_codes, label_of
 from .modules.m1_intake import service as intake_service
 from .modules.m2_normalize import service as normalize_service
 from .modules.m3_blocks import service as block_service
 from .modules.m4_pairs import service as pair_service
 from .modules.m5_clusters import service as cluster_service
 from .modules.m6_reviews import service as review_service
+from .modules.m8_golden import service as golden_service
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
@@ -29,6 +30,7 @@ NAV = (
     ("normalize", "归一", "/normalize"),
     ("pairs", "候选对", "/pairs"),
     ("clusters", "合并簇", "/clusters"),
+    ("golden", "金账", "/golden"),
     ("reviews", "复核", "/reviews"),
     ("export", "导出", "/export"),
 )
@@ -77,12 +79,20 @@ def date_only(value) -> str:
     return moment.astimezone(ZoneInfo(TZ_DISPLAY)).strftime("%Y-%m-%d")
 
 
+def from_json(value):
+    try:
+        return json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+
+
 templates.env.filters["money"] = money
 templates.env.filters["intcomma"] = intcomma
 templates.env.filters["score"] = score
 templates.env.filters["pct"] = pct
 templates.env.filters["ts"] = ts
 templates.env.filters["date_only"] = date_only
+templates.env.filters["from_json"] = from_json
 
 router = APIRouter(include_in_schema=False)
 
@@ -142,11 +152,14 @@ def page_ledger(request: Request):
     block_service.ensure_blocks(run_id)
     pair_service.ensure_pairs(run_id)
     summary = cluster_service.ensure_clusters(run_id)
+    golden_service.ensure_golden(run_id)
     ledger = cluster_service.reconcile(run_id)
+    golden_summary = golden_service.summary(run_id)
     context = base_context(request, "ledger", "台账总览", run)
     context.update({
         "ledger": ledger,
         "summary": summary,
+        "golden_summary": golden_summary,
         "clusters": store.list_clusters(run_id)[:8],
         "pairs": store.list_pairs(run_id)[:8],
         "runs": run_briefs(5),
@@ -204,6 +217,34 @@ def page_clusters(request: Request):
         "ledger": cluster_service.reconcile(run_id),
     })
     return render(request, "clusters.html", context)
+
+
+@router.get("/golden", response_class=HTMLResponse)
+def page_golden(request: Request):
+    run = current_run()
+    run_id = run["run_id"]
+    summary = golden_service.ensure_golden(run_id)
+    golden_rows = store.list_golden(run_id)
+    provenance = store.list_provenance(run_id)
+    ledger = store.list_amount_ledger(run_id)
+    pending = store.list_golden_pending(run_id)
+    prov_by_cluster: dict = {}
+    for row in provenance:
+        prov_by_cluster.setdefault(row["cluster_id"], []).append(row)
+    ledger_by_cluster: dict = {}
+    for row in ledger:
+        ledger_by_cluster.setdefault(row["cluster_id"], []).append(row)
+    context = base_context(request, "golden", "金账主数据", run)
+    context.update({
+        "golden_summary": summary,
+        "golden_rows": golden_rows,
+        "prov_by_cluster": prov_by_cluster,
+        "ledger_by_cluster": ledger_by_cluster,
+        "pending": pending,
+        "field_labels": GOLDEN_FIELD_LABELS,
+        "reason_label": label_of,
+    })
+    return render(request, "golden.html", context)
 
 
 @router.get("/reviews", response_class=HTMLResponse)

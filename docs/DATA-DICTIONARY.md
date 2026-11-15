@@ -13,7 +13,7 @@
 | `erp_source` | 来源系统 | 字符串 | 是 | ERP-A 到 ERP-D |
 | `ref_master_id` | 主档号 | 字符串 | 是 | 声明本记录归属的主档，需通过引用核验 |
 | `ytd_amount` | 本年累计 | 十进制 | 是 | 单位元，两位小数，Decimal 存储 |
-| `last_update` | 更新时间 | 日期 | 是 | 来源系统日期，不参与计算 |
+| `last_update` | 更新时间 | 日期 | 是 | 来源系统日期；字段级裁决时同级来源按它取最新 |
 
 ## 批次标识
 
@@ -71,6 +71,36 @@
 
 ## 去重键与空态
 
-- 去重键为 `supplier_id`；同键同值剔除并记 `Q_DUP_ID_SAME`，同键不同值进冲突表。
+- 去重键为 `supplier_id`；同键同值剔除并记 `Q_DUP_ID_SAME`。
+- 同键不同值不再整行先到先得：按字段可信级别裁决，晚到更正只接管自己可信的字段
+  （`G_FIELD_OVERRIDDEN`），同级别各执一词记 `G_FIELD_CONFLICT`，每个动作都进冲突表留证据。
 - 空态三态：仅表头 `header_only`、全空行 `blank_rows`、无数据行 `no_row`，
   三者在文件诊断里分别给出，不合并成同一个成功结论。
+
+## 字段级可信来源画像（M8 金账）
+
+可信级别只在 `app/config.py` 的 `FIELD_TRUST` 定义；级别 0 表示该来源对此字段不可信，
+其值只作证据、永不入主数据。
+
+| 来源 | 名称 | 税号 | 城市 | 开户行账号 | 供应商号 | 金额权威 |
+|---|---|---|---|---|---|---|
+| ERP-A 主档 | 3 | 3 | 3 | 3 | 3 | 2 |
+| ERP-B 别名 | 2 | 3 | 2 | 3 | 2 | 1 |
+| ERP-C 北区 | 2 | 3 | 2 | 3 | 2 | 1 |
+| ERP-D 金额 | 1 | 1 | 1 | **0（不可信）** | 1 | 3 |
+
+- 字段裁决键：`(-可信级别, -last_update, supplier_id)`，与文件读取顺序无关，重跑逐字一致。
+- 名称的写法差异若归一名相同，按同一主体别名处理，不产生待核对。
+- 银行账户只接受 `BANK_ACCOUNT_TRUSTED_SOURCES`（A/B/C）；ERP-D 即便带账号也只登记
+  `G_ACCOUNT_UNVERIFIED`，金账账户留空并阻断付款。
+- 税号出现多个可信值记 `G_TAX_PENDING`，金账保留一个候选税号但强制阻断付款。
+
+### 本年累计去重
+
+- 各系统的 `ytd_amount` 是对同一主体同一笔余额的快照，**跨系统绝不相加**。
+- 每个主体只在正数余额里选权威级别最高的一条（`G_AMOUNT_ADOPTED`），
+  其余快照记 `G_AMOUNT_SUPPRESSED` 抑制不计；0.00/哨兵不会覆盖真实余额。
+- 守恒口径：观察余额合计 = 出账合计 + 抑制合计，全部 Decimal 逐分相等。
+- 金账表 `golden_records`、溯源表 `field_provenance`、金额账本 `amount_ledger`、
+  待核对表 `golden_pending` 均按 `(run_id, cluster_id[, field/supplier_id])` 唯一，
+  每次重建先清空再写入。
